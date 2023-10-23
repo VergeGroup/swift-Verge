@@ -100,6 +100,7 @@ public final class Changes<Value: Equatable>: @unchecked Sendable, ChangesType, 
 
   public let previous: Changes<Value>?
   private let innerBox: InnerBox
+
   public private(set) var version: UInt64
 
   // MARK: - Computed Properties
@@ -120,13 +121,13 @@ public final class Changes<Value: Equatable>: @unchecked Sendable, ChangesType, 
   /// We can't access `.computed` from this.
   ///
   /// - Important: a returns value won't change against pointer-personality
-  public var primitive: Value { _read { yield innerBox.value } }
+  public var primitive: Value { get { innerBox.getValue() } }
 
   /// Returns a value as primitive
   /// We can't access `.computed` from this.
   ///
   /// - Important: a returns value won't change against pointer-personality
-  public var root: Value { _read { yield innerBox.value } }
+  public var root: Value { get { innerBox.getValue() } }
 
   public let traces: [MutationTrace]
   public let modification: InoutRef<Value>.Modification?
@@ -151,7 +152,7 @@ public final class Changes<Value: Equatable>: @unchecked Sendable, ChangesType, 
 
   private init(
     previous: Changes<Value>?,
-    innerBox: InnerBox,
+    innerBox: consuming InnerBox,
     version: UInt64,
     traces: [MutationTrace],
     modification: InoutRef<Value>.Modification?,
@@ -170,16 +171,16 @@ public final class Changes<Value: Equatable>: @unchecked Sendable, ChangesType, 
   deinit {
     vergeSignpostEvent("Changes.deinit", label: "\(type(of: self))")
 
-    Task { [innerBox] in
-      await _shared_changesDeallocationQueue.releaseObjectInBackground(object: innerBox)
-    }
+//    Task { [innerBox] in
+//      await _shared_changesDeallocationQueue.releaseObjectInBackground(object: innerBox)
+//    }
   }
 
   @inline(__always)
   private func cloneWithDropsPrevious() -> Changes<Value> {
     return .init(
       previous: nil,
-      innerBox: innerBox,
+      innerBox: innerBox.clone(),
       version: version,
       traces: traces,
       modification: nil,
@@ -271,7 +272,7 @@ public final class Changes<Value: Equatable>: @unchecked Sendable, ChangesType, 
   }
 
   @discardableResult
-  public func _read<Return>(perform: (__shared ReadRef<Value>) -> Return) -> Return {
+  public func _read<Return>(perform: (borrowing Value) -> Return) -> Return {
     innerBox._read(perform: perform)
   }
 
@@ -625,14 +626,18 @@ extension Changes: CustomReflectable {
 // MARK: - Nested Types
 
 extension Changes {
-  private final class InnerBox {
+  struct InnerBox: ~Copyable {
 
-    var value: Value
+    let value: Value
+
+    func getValue() -> Value {
+      value
+    }
 
     init(
       value: consuming Value
     ) {
-      self.value = value
+      self.value = consume value
     }
  
     deinit {}
@@ -644,14 +649,12 @@ extension Changes {
     }
 
     @discardableResult
-    @inline(__always)
-    func _read<Return>(perform: (__shared ReadRef<Value>) -> Return) -> Return {
+    func _read<Return>(perform: (borrowing Value) -> Return) -> Return {
+      perform(value)
+    }
 
-      withUnsafePointer(to: &value) { (pointer) -> Return in
-        let ref = ReadRef<Value>.init(pointer)
-        return perform(ref)
-      }
-
+    func clone() -> Self {
+      .init(value: value)
     }
 
   }
@@ -693,4 +696,9 @@ public struct IfChangedBox<T>: ~Copyable {
     }
     return nil
   }
+}
+
+enum NoncopyableOptional<Wrapped>: ~Copyable {
+  case none
+  case some(Wrapped)
 }
